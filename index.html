@@ -55,6 +55,7 @@
 
     <div class="card">
       <input class="pin" id="pin" maxlength="4" placeholder="PIN" inputmode="numeric">
+      <input id="device" placeholder="Код устройства">
       <select id="dur">
         <option value="0">Без таймера</option>
         <option value="5">5 минут</option>
@@ -75,15 +76,23 @@
   </div>
 
   <script>
-    var T_CMD='simalee_garden_a7/cmd';
-    var T_STAT='simalee_garden_a7/status';
-    var T_EVENT='simalee_garden_a7/event';
+    var T_CMD='',T_STAT='',T_EVENT='';
     var c=null,last=0;
     function el(id){return document.getElementById(id)}
     function log(s){var b=el('log');b.innerHTML=(new Date().toLocaleTimeString()+' '+s+'<br>')+b.innerHTML}
     function cls(id,on){var e=el(id);e.textContent=on?'ON':'OFF';e.className='v '+(on?'ok':'bad')}
     function dur(){return parseInt(el('dur').value||'0')}
+    function topics(){
+      var code=el('device').value.trim();
+      if(!code){log('введите код устройства');return false}
+      localStorage.setItem('gardenDevice',code);
+      T_CMD='simalee_garden_'+code+'/cmd';
+      T_STAT='simalee_garden_'+code+'/status';
+      T_EVENT='simalee_garden_'+code+'/event';
+      return true;
+    }
     function cmd(o){
+      if(!topics())return;
       if(!c||!c.connected){log('нет MQTT');return}
       var p=el('pin').value.trim();
       if(!p){log('введите PIN');return}
@@ -109,11 +118,13 @@
         reconnectPeriod:3000,
         connectTimeout:10000
       });
-      c.on('connect',function(){setConn(true,'MQTT online');c.subscribe(T_STAT);c.subscribe(T_EVENT);log('connected')});
+      c.on('connect',function(){setConn(true,'MQTT online');if(topics()){c.subscribe(T_STAT);c.subscribe(T_EVENT)}log('connected')});
       c.on('reconnect',function(){setConn(false,'MQTT reconnect...')});
       c.on('error',function(e){setConn(false,'MQTT error');log(e.message||e)});
       c.on('message',function(t,p){try{var d=JSON.parse(p.toString());if(t==T_STAT)status(d);else if(d.event)log(d.event)}catch(e){}});
     }
+    el('device').value=localStorage.getItem('gardenDevice')||'';
+    el('device').addEventListener('change',function(){if(c&&c.connected&&topics()){c.unsubscribe('#');c.subscribe(T_STAT);c.subscribe(T_EVENT);log('device set')}});
     setInterval(function(){if(last&&Date.now()-last>7000)setConn(false,'нет статуса от ESP')},1000);
     connect();
   </script>
