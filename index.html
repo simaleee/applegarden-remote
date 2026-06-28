@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AppleGarden Remote</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;font-family:Inter,Arial,sans-serif;background:linear-gradient(145deg,#e7f1ee,#cfdcda);color:#213037;display:flex;justify-content:center;padding:14px}
+    .app{width:100%;max-width:430px}
+    .top{padding:18px 16px 14px}
+    .time{font-size:32px;font-weight:900}
+    .place{font-size:13px;font-weight:800;color:#177e79;margin-top:5px}
+    .card{background:rgba(255,255,255,.78);border:1px solid rgba(52,78,86,.15);border-radius:18px;padding:14px;margin:10px 0;box-shadow:0 10px 24px rgba(37,53,58,.14),inset 0 1px 0 rgba(255,255,255,.8)}
+    .state{font-size:18px;font-weight:900;color:#168f8b}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .tile{padding:12px;border-radius:14px;background:#f7fbfa;border:1px solid rgba(52,78,86,.12)}
+    .k{font-size:11px;text-transform:uppercase;color:#66777c;font-weight:900}
+    .v{font-size:20px;font-weight:900;margin-top:4px}
+    .ok{color:#139b72}.bad{color:#d94f4f}.warn{color:#bf7a1b}
+    button{width:100%;border:0;border-radius:16px;padding:15px 10px;margin:6px 0;font-size:16px;font-weight:900;color:#06201e;background:linear-gradient(135deg,#18c7bf,#83e8cb);box-shadow:0 8px 18px rgba(37,53,58,.14)}
+    button.stop{background:linear-gradient(135deg,#ff7a62,#e86666);color:white}
+    button.alt{background:linear-gradient(145deg,#fff,#e5efed);color:#213037;border:1px solid rgba(52,78,86,.14)}
+    button:active{transform:scale(.98)}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    input,select{width:100%;padding:13px;border-radius:14px;border:1px solid rgba(52,78,86,.16);font-size:16px;background:white;margin:6px 0}
+    .pin{text-align:center;letter-spacing:5px;font-size:18px}
+    .small{font-size:12px;color:#66777c;line-height:1.5}
+    .log{height:120px;overflow:auto;background:#213037;color:#9ff6cf;border-radius:14px;padding:10px;font-family:monospace;font-size:11px}
+    .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#d94f4f;margin-right:6px}
+    .dot.on{background:#16bd75}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="top">
+      <div class="time">AppleGarden</div>
+      <div class="place">Новосельская 88 · Яблочный Сад</div>
+    </div>
+
+    <div class="card">
+      <div class="state"><span id="dot" class="dot"></span><span id="conn">MQTT подключение...</span></div>
+      <div class="small">Удалённая панель работает через broker.emqx.io. ESP должна быть подключена к домашнему WiFi.</div>
+    </div>
+
+    <div class="card grid">
+      <div class="tile"><div class="k">Насос</div><div class="v" id="run">-</div></div>
+      <div class="tile"><div class="k">Налив</div><div class="v" id="fill">-</div></div>
+      <div class="tile"><div class="k">Бак пустой</div><div class="v" id="low">-</div></div>
+      <div class="tile"><div class="k">Бак полный</div><div class="v" id="full">-</div></div>
+      <div class="tile"><div class="k">Влажность</div><div class="v" id="soil">-</div></div>
+      <div class="tile"><div class="k">Погода</div><div class="v" id="temp">-</div></div>
+    </div>
+
+    <div class="card">
+      <input class="pin" id="pin" maxlength="4" placeholder="PIN" inputmode="numeric">
+      <select id="dur">
+        <option value="0">Без таймера</option>
+        <option value="5">5 минут</option>
+        <option value="15" selected>15 минут</option>
+        <option value="30">30 минут</option>
+      </select>
+      <button onclick="cmd({a:'start',r:0,d:1,t:dur()})">🍏 Старт деревья</button>
+      <button onclick="cmd({a:'start',r:1,d:0,t:dur()})">🌿 Старт газон</button>
+      <button onclick="cmd({a:'start',r:1,d:1,t:dur()})">🍏🌿 Старт всё</button>
+      <button class="stop" onclick="cmd({a:'stop'})">Стоп</button>
+      <div class="row">
+        <button class="alt" onclick="cmd({a:'fill'})">Набор бочки</button>
+        <button class="alt" onclick="cmd({a:'weather'})">Погода</button>
+      </div>
+    </div>
+
+    <div class="card"><div class="k">События</div><div class="log" id="log"></div></div>
+  </div>
+
+  <script>
+    var T_CMD='simalee_garden_a7/cmd';
+    var T_STAT='simalee_garden_a7/status';
+    var T_EVENT='simalee_garden_a7/event';
+    var c=null,last=0;
+    function el(id){return document.getElementById(id)}
+    function log(s){var b=el('log');b.innerHTML=(new Date().toLocaleTimeString()+' '+s+'<br>')+b.innerHTML}
+    function cls(id,on){var e=el(id);e.textContent=on?'ON':'OFF';e.className='v '+(on?'ok':'bad')}
+    function dur(){return parseInt(el('dur').value||'0')}
+    function cmd(o){
+      if(!c||!c.connected){log('нет MQTT');return}
+      var p=el('pin').value.trim();
+      if(!p){log('введите PIN');return}
+      o.pin=p;
+      c.publish(T_CMD,JSON.stringify(o));
+      log('cmd '+o.a);
+    }
+    function setConn(on,t){el('dot').className='dot '+(on?'on':'');el('conn').textContent=t}
+    function status(d){
+      last=Date.now();
+      cls('run',!!d.run);
+      cls('fill',!!d.fill);
+      el('low').textContent=d.low?'ПУСТО':'OK';el('low').className='v '+(d.low?'bad':'ok');
+      el('full').textContent=d.full?'ПОЛОН':'-';el('full').className='v '+(d.full?'ok':'warn');
+      el('soil').textContent=(d.soilRaw!==undefined?d.soilRaw:'-');el('soil').className='v '+(d.soil?'bad':'ok');
+      el('temp').textContent=(d.temp!==undefined?d.temp+'°':'-');
+    }
+    function connect(){
+      setConn(false,'MQTT подключение...');
+      c=mqtt.connect('wss://broker.emqx.io:8084/mqtt',{
+        clientId:'garden_remote_'+Math.random().toString(16).slice(2),
+        keepalive:30,
+        reconnectPeriod:3000,
+        connectTimeout:10000
+      });
+      c.on('connect',function(){setConn(true,'MQTT online');c.subscribe(T_STAT);c.subscribe(T_EVENT);log('connected')});
+      c.on('reconnect',function(){setConn(false,'MQTT reconnect...')});
+      c.on('error',function(e){setConn(false,'MQTT error');log(e.message||e)});
+      c.on('message',function(t,p){try{var d=JSON.parse(p.toString());if(t==T_STAT)status(d);else if(d.event)log(d.event)}catch(e){}});
+    }
+    setInterval(function(){if(last&&Date.now()-last>7000)setConn(false,'нет статуса от ESP')},1000);
+    connect();
+  </script>
+</body>
+</html>
